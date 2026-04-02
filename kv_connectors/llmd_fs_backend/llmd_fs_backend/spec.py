@@ -64,10 +64,18 @@ class SharedStorageOffloadingSpec(OffloadingSpec):
             self.extra_config.get("block_size", DEFAULT_STORAGE_BLOCK_SIZE)
         )
 
-        assert self.offloaded_block_size % self.gpu_block_size == 0, (
+        # vLLM v1 returns gpu_block_size as a tuple (e.g., (16,))
+        # https://github.com/vllm-project/vllm/blob/bcf2be96120005e9aea171927f85055a6a5c0cf6/vllm/v1/kv_offload/spec.py#L40
+        gpu_block_size = (
+            self.gpu_block_size[0]
+            if isinstance(self.gpu_block_size, tuple)
+            else self.gpu_block_size
+        )
+
+        assert self.offloaded_block_size % gpu_block_size == 0, (
             "offloaded_block_size must be a multiple of gpu_block_size"
         )
-        self.gpu_blocks_per_file = self.offloaded_block_size // self.gpu_block_size
+        self.gpu_blocks_per_file = self.offloaded_block_size // gpu_block_size
 
         self.read_preferring_ratio = float(
             self.extra_config.get(
@@ -86,7 +94,7 @@ class SharedStorageOffloadingSpec(OffloadingSpec):
         self.file_mapper = FileMapper(
             root_dir=shared_storage_path,
             model_name=vllm_config.model_config.model,
-            gpu_block_size=self.gpu_block_size,
+            gpu_block_size=gpu_block_size,
             gpu_blocks_per_file=self.gpu_blocks_per_file,
             tp_size=tp_size,
             pp_size=pp_size,
@@ -107,10 +115,15 @@ class SharedStorageOffloadingSpec(OffloadingSpec):
         attn_backends: dict[str, type[AttentionBackend]],
     ) -> Iterator[tuple[type[LoadStoreSpec], type[LoadStoreSpec], OffloadingHandler]]:
         if not self._handlers:
+            gpu_block_size = (
+                self.gpu_block_size[0]
+                if isinstance(self.gpu_block_size, tuple)
+                else self.gpu_block_size
+            )
             self._handlers = StorageOffloadingHandlers(
                 file_mapper=self.file_mapper,
                 gpu_blocks_per_file=self.gpu_blocks_per_file,
-                gpu_block_size=self.gpu_block_size,
+                gpu_block_size=gpu_block_size,
                 attn_backends=attn_backends,
                 kv_caches=kv_caches,
                 threads_per_gpu=self.threads_per_gpu,
