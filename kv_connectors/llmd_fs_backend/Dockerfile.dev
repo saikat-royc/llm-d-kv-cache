@@ -42,7 +42,7 @@ COPY . .
 # 5. Perform the editable installation (Build from source) and install dev tools
 # We use --no-build-isolation because the build environment needs access to
 # pre-installed system packages for the C++ extension compilation.
-RUN pip install pytest && \
+RUN pip install pytest prometheus_client && \
     if [ -f "setup.py" ]; then \
         pip install --no-build-isolation -e .; \
     elif [ -f "kv_connectors/llmd_fs_backend/setup.py" ]; then \

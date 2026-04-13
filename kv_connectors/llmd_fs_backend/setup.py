@@ -53,6 +53,9 @@ nvcc_args = [
 setup(
     name="llmd_fs_connector",
     packages=find_packages(),
+    install_requires=[
+        "prometheus_client",
+    ],
     ext_modules=[
         CUDAExtension(
             "storage_offload",

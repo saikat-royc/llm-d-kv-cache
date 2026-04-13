@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import os
+import time
 from collections.abc import Iterable
 
 from vllm.logger import init_logger
@@ -25,6 +26,11 @@ from vllm.v1.kv_offload.abstract import (
 
 from llmd_fs_backend.file_mapper import FileMapper
 from llmd_fs_backend.mediums import SharedStorageLoadStoreSpec
+from llmd_fs_backend.metrics import (
+    LLMD_FS_LOOKUP_DURATION_SECONDS,
+    LLMD_FS_LOOKUP_HIT_TOTAL,
+    LLMD_FS_LOOKUP_TOTAL_BLOCKS,
+)
 
 logger = init_logger(__name__)
 
@@ -44,12 +50,39 @@ class SharedStorageOffloadingManager(OffloadingManager):
         """
         Return how many consecutive blocks from the start are already offloaded.
         """
+        start_time = time.monotonic()
+
+        # Materialize the list to get a stable count for metrics
+        hashes_list = list(block_hashes)
+        total_requested = len(hashes_list)
+        LLMD_FS_LOOKUP_TOTAL_BLOCKS.inc(total_requested)
+
         hit_count = 0
-        for block_hash in block_hashes:
+        for block_hash in hashes_list:
             file_path = self.file_mapper.get_file_name(block_hash)
             if not os.path.exists(file_path):
                 break
             hit_count += 1
+
+        duration = time.monotonic() - start_time
+
+        # Update Prometheus metrics
+        LLMD_FS_LOOKUP_DURATION_SECONDS.observe(duration)
+        LLMD_FS_LOOKUP_HIT_TOTAL.inc(hit_count)
+
+        # Calculate overlap percentage (handling empty requests)
+        overlap_pct = (hit_count / total_requested * 100) if total_requested > 0 else 0.0
+
+        # Emit metrics to the log
+        logger.info(
+            "Lookup finished: duration=%.6f [s] overlap=%.2f%% "
+            "hits=%d/%d blocks",
+            duration,
+            overlap_pct,
+            hit_count,
+            total_requested,
+        )
+
         return hit_count
 
     # ----------------------------------------------------------------------
