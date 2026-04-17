@@ -26,6 +26,7 @@ from vllm.v1.kv_offload.abstract import (
 
 from llmd_fs_backend.file_mapper import FileMapper
 from llmd_fs_backend.mediums import SharedStorageLoadStoreSpec
+from llmd_fs_backend.metadata_cache import MetadataCache
 from llmd_fs_backend.metrics import (
     LLMD_FS_LOOKUP_DURATION_SECONDS,
     LLMD_FS_LOOKUP_HIT_TOTAL,
@@ -40,8 +41,11 @@ class SharedStorageOffloadingManager(OffloadingManager):
     SharedStorageOffloadingManager manages KV offloading to a shared storage medium.
     """
 
-    def __init__(self, file_mapper: FileMapper) -> None:
+    def __init__(self, file_mapper: FileMapper, metadata_cache_size: int = 0) -> None:
         self.file_mapper: FileMapper = file_mapper
+        self.cache: MetadataCache | None = (
+            MetadataCache(metadata_cache_size) if metadata_cache_size > 0 else None
+        )
 
     # ----------------------------------------------------------------------
     # Lookup
@@ -57,17 +61,44 @@ class SharedStorageOffloadingManager(OffloadingManager):
         total_requested = len(hashes_list)
         LLMD_FS_LOOKUP_TOTAL_BLOCKS.inc(total_requested)
 
+        # 1. Batch check in-memory cache
+        if self.cache:
+            cache_hits = self.cache.batch_contains(hashes_list)
+        else:
+            cache_hits = [False] * total_requested
+
         hit_count = 0
-        for block_hash in hashes_list:
+        memory_hits = 0
+        fs_hits = 0
+        new_hits_to_cache = []
+
+        # 2. Iterate and fallback to FS only when needed
+        for i, is_cache_hit in enumerate(cache_hits):
+            if is_cache_hit:
+                hit_count += 1
+                memory_hits += 1
+                continue
+
+            # Fallback to filesystem for consecutive blocks
+            block_hash = hashes_list[i]
             file_path = self.file_mapper.get_file_name(block_hash)
             if not os.path.exists(file_path):
+                # First missing block found - stop lookup
                 break
+
             hit_count += 1
+            fs_hits += 1
+            new_hits_to_cache.append(block_hash)
+
+        # 3. Batch update cache with new hits found from FS
+        if self.cache and new_hits_to_cache:
+            self.cache.batch_insert(new_hits_to_cache)
 
         duration = time.monotonic() - start_time
 
         # Update Prometheus metrics
-        LLMD_FS_LOOKUP_DURATION_SECONDS.observe(duration)
+        LLMD_FS_LOOKUP_DURATION_SECONDS.labels(
+            num_blocks=str(total_requested)).observe(duration)
         LLMD_FS_LOOKUP_HIT_TOTAL.inc(hit_count)
 
         # Calculate overlap percentage (handling empty requests)
@@ -76,11 +107,13 @@ class SharedStorageOffloadingManager(OffloadingManager):
         # Emit metrics to the log
         logger.info(
             "Lookup finished: duration=%.6f [s] overlap=%.2f%% "
-            "hits=%d/%d blocks",
+            "hits=%d/%d blocks (memory=%d, filesystem=%d)",
             duration,
             overlap_pct,
             hit_count,
             total_requested,
+            memory_hits,
+            fs_hits,
         )
 
         return hit_count
@@ -92,6 +125,9 @@ class SharedStorageOffloadingManager(OffloadingManager):
         """
         For shared storage, loading is stateless - return specs that point to files.
         """
+        if self.cache:
+            self.cache.batch_pin(block_hashes)
+
         return SharedStorageLoadStoreSpec(block_hashes)
 
     def touch(self, block_hashes: Iterable[BlockHash]):
@@ -103,8 +139,9 @@ class SharedStorageOffloadingManager(OffloadingManager):
         pass
 
     def complete_load(self, block_hashes: Iterable[BlockHash]):
-        """Stateless load - no post-load action needed."""
-        pass
+        """Stateless load - no post-load action needed, but unpin metadata."""
+        if self.cache:
+            self.cache.batch_unpin(block_hashes)
 
     # ----------------------------------------------------------------------
     # Store
@@ -119,6 +156,9 @@ class SharedStorageOffloadingManager(OffloadingManager):
         """
         block_hashes_to_store = list(block_hashes)
 
+        if self.cache:
+            self.cache.batch_pin(block_hashes_to_store)
+
         # Set up store spec
         store_spec = SharedStorageLoadStoreSpec(block_hashes_to_store)
 
@@ -130,6 +170,10 @@ class SharedStorageOffloadingManager(OffloadingManager):
 
     def complete_store(self, block_hashes: Iterable[BlockHash], success: bool = True):
         """
-        For shared storage, storing is stateless - no action needed.
+        For shared storage, storing is stateless - no action needed, but unpin.
         """
-        pass
+        if self.cache:
+            if success:
+                # Ensure it is in the positive cache after successful store
+                self.cache.batch_insert(block_hashes)
+            self.cache.batch_unpin(block_hashes)

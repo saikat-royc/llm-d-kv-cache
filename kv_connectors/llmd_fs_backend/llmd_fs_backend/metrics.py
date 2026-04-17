@@ -12,12 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from prometheus_client import Counter, Histogram
+from prometheus_client import Counter, Gauge, Histogram
 
 # Prometheus metrics for llmd_fs_backend
 LLMD_FS_LOOKUP_DURATION_SECONDS = Histogram(
     "vllm_llmd_fs_lookup_duration_seconds",
     "Time spent in the metadata lookup function of the fs backend manager.",
+    labelnames=["num_blocks"],
 )
 
 LLMD_FS_LOOKUP_HIT_TOTAL = Counter(
@@ -28,4 +29,9 @@ LLMD_FS_LOOKUP_HIT_TOTAL = Counter(
 LLMD_FS_LOOKUP_TOTAL_BLOCKS = Counter(
     "vllm_llmd_fs_lookup_total_blocks",
     "Total number of blocks requested in the fs backend manager lookup.",
+)
+
+LLMD_FS_METADATA_CACHE_USAGE_BYTES = Gauge(
+    "vllm_llmd_fs_metadata_cache_usage_bytes",
+    "Current memory usage of the metadata lookup cache in bytes.",
 )

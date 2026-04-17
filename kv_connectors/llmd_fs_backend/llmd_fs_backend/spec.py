@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 from collections.abc import Iterator
 
 import torch
@@ -82,6 +83,15 @@ class SharedStorageOffloadingSpec(OffloadingSpec):
             )
         )
 
+        # Metadata Cache Size (0 = disabled)
+        # Prioritize ENV variable VLLM_LLMD_FS_METADATA_CACHE_SIZE
+        self.metadata_cache_size = int(
+            os.environ.get(
+                "VLLM_LLMD_FS_METADATA_CACHE_SIZE",
+                self.extra_config.get("metadata_cache_size", 0),
+            )
+        )
+
         parallel_config = vllm_config.parallel_config
         tp_size = parallel_config.tensor_parallel_size
         pp_size = parallel_config.pipeline_parallel_size
@@ -105,7 +115,10 @@ class SharedStorageOffloadingSpec(OffloadingSpec):
     def get_manager(self) -> OffloadingManager:
         assert self.vllm_config.parallel_config.rank == 0, "Scheduler rank should be 0"
         if not self._manager:
-            self._manager = SharedStorageOffloadingManager(file_mapper=self.file_mapper)
+            self._manager = SharedStorageOffloadingManager(
+                file_mapper=self.file_mapper,
+                metadata_cache_size=self.metadata_cache_size,
+            )
         return self._manager
 
     def get_handlers(
